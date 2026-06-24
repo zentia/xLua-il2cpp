@@ -10,9 +10,7 @@
 
 #include "DataTransfer.h"
 #include "XLua.h"
-#if WITH_BIANQUE
 #include "logger/osgame_log.h"
-#endif
 
 extern "C" int lua_setfenv(lua_State* L, int idx);
 
@@ -123,25 +121,41 @@ bool pesapi_get_value_bool(pesapi_env env, pesapi_value pvalue)
 int32_t pesapi_get_value_int32(pesapi_env env, pesapi_value pvalue)
 {
     lua_State* L = reinterpret_cast<lua_State*>(env);
-    return lua_tointeger(L, pvalue);
+    if (lua_isinteger(L, pvalue))
+    {
+        return lua_tointeger(L, pvalue);
+    }
+    return lua_tonumber(L, pvalue);
 }
 
 uint32_t pesapi_get_value_uint32(pesapi_env env, pesapi_value pvalue)
 {
     lua_State* L = reinterpret_cast<lua_State*>(env);
-    return lua_tointeger(L, pvalue);
+    if (lua_isinteger(L, pvalue))
+    {
+        return lua_tointeger(L, pvalue);
+    }
+    return lua_tonumber(L, pvalue);
 }
 
 int64_t pesapi_get_value_int64(pesapi_env env, pesapi_value pvalue)
 {
     lua_State* L = reinterpret_cast<lua_State*>(env);
-    return lua_tointeger(L, pvalue);
+    if (lua_isinteger(L, pvalue))
+    {
+        return lua_tointeger(L, pvalue);
+    }
+    return lua_tonumber(L, pvalue);
 }
 
 uint64_t pesapi_get_value_uint64(pesapi_env env, pesapi_value pvalue)
 {
     lua_State* L = reinterpret_cast<lua_State*>(env);
-    return lua_tointeger(L, pvalue);
+    if (lua_isinteger(L, pvalue))
+    {
+        return lua_tointeger(L, pvalue);
+    }
+    return lua_tonumber(L, pvalue);
 }
 
 double pesapi_get_value_double(pesapi_env env, pesapi_value pvalue)
@@ -480,46 +494,118 @@ int pesapi_get_auth_code()
 
 void pesapi_debug(const char* msg)
 {
-#if WITH_BIANQUE    
     osgame_log->debug(osgame_log->cat.Lua, msg);
-#endif    
 }
 
 void pesapi_info(const char* msg)
 {
-#if WITH_BIANQUE    
     osgame_log->info(osgame_log->cat.Lua, msg);
-#endif    
 }
 
 void pesapi_warning(const char* msg)
 {
-#if WITH_BIANQUE    
     osgame_log->warning(osgame_log->cat.Lua, msg);
-#endif    
 }
 
 void pesapi_error(const char* msg)
 {
-#if WITH_BIANQUE    
     osgame_log->error(osgame_log->cat.Lua, msg);
-#endif    
 }
 
 void pesapi_fatal(const char* msg)
 {
-#if WITH_BIANQUE    
     osgame_log->fatal(osgame_log->cat.Lua, msg);
-#endif    
+}
+
+// 简单的 traceback 实现，不查找函数名（避免 findfield 中的栈问题）
+static void simple_traceback(std::string& result, lua_State* L1, const char* msg, int level)
+{
+    lua_Debug ar;
+    if (msg && *msg)
+    {
+        result = msg;
+        result += "\n";
+    }
+    result += "stack traceback:";
+
+    while (lua_getstack(L1, level++, &ar))
+    {
+        lua_getinfo(L1, "Slnt", &ar);  // 只获取源码信息，不获取函数对象
+        result += "\n\t";
+
+        if (ar.source && ar.source[0] == '@')
+        {
+            result += ar.source + 1;  // 跳过 '@' 前缀
+        }
+        else if (ar.source)
+        {
+            result += ar.source;
+        }
+        else
+        {
+            result += "?";
+        }
+
+        if (ar.currentline > 0)
+        {
+            result += ":";
+            result += std::to_string(ar.currentline);
+        }
+
+        result += ": in ";
+
+        if (ar.name)
+        {
+            result += ar.namewhat ? ar.namewhat : "";
+            result += " '";
+            result += ar.name;
+            result += "'";
+        }
+        else if (ar.what && strcmp(ar.what, "main") == 0)
+        {
+            result += "main chunk";
+        }
+        else if (ar.what && strcmp(ar.what, "C") == 0)
+        {
+            result += "C function";
+        }
+        else
+        {
+            result += "function <";
+            if (ar.source) result += ar.source;
+            result += ":";
+            result += std::to_string(ar.linedefined);
+            result += ">";
+        }
+    }
 }
 
 void pesapi_snapshot(pesapi_env env, const char* msg)
 {
     lua_State* L = reinterpret_cast<lua_State*>(env);
-    int oldTop = lua_gettop(L);
-    if (oldTop == 0)
+    if (L == nullptr)
+    {
+        xlua::g_snapshot = msg ? msg : "null lua state";
         return;
-    xlua::snapshot_lua_debug_info(L, 0, msg);
+    }
+
+    // 获取要 traceback 的目标线程
+    lua_State* L1;
+    if (lua_isthread(L, 1))
+    {
+        L1 = lua_tothread(L, 1);
+    }
+    else
+    {
+        L1 = L;
+    }
+    int level = (L == L1) ? 1 : 0;
+
+    // 使用简单的 traceback 实现，不操作 Lua 栈（除了 lua_getstack/lua_getinfo）
+    // 避免 luaL_traceback -> findfield -> lua_next 中的栈相对索引问题
+    std::string result;
+    simple_traceback(result, L1, msg, level);
+    xlua::g_snapshot = result;
 }
 
 struct pesapi_value_ref__
@@ -572,9 +658,7 @@ void pesapi_release_value_ref(pesapi_value_ref value_ref)
         }
         else
         {
-#if WITH_BIANQUE            
             osgame_log->error_with_stack_trace(osgame_log->cat.Lua, "Invalid value_ref");
-#endif            
         }
         delete value_ref;
     }
@@ -586,9 +670,7 @@ int pesapi_get_value_from_ref(pesapi_env env, pesapi_value_ref value_ref)
     if (value_ref->authCode != pesapi_get_auth_code())
     {
         lua_pushnil(L);
-#if WITH_BIANQUE        
         osgame_log->error_with_stack_trace(osgame_log->cat.Lua, "Invalid value_ref when invoke pesapi_get_value_from_ref");
-#endif        
     }
     lua_rawgeti(L, LUA_REGISTRYINDEX, value_ref->value_ref);
     return lua_gettop(L);
@@ -637,9 +719,7 @@ int pesapi_get_property(pesapi_env env, pesapi_value pobject, const char* key)
     lua_getfield(L, pobject, key);
     if (lua_isnil(L, -1))
     {
-#if WITH_BIANQUE        
         osgame_log->error_with_stack_trace(osgame_log->cat.Lua, "no such field {}", key);
-#endif        
         return 0;
     }
     return lua_gettop(L);
@@ -701,13 +781,24 @@ void pesapi_set_property_uint64(pesapi_env env, pesapi_value pobject, uint64_t k
     lua_rawseti(L, pobject, key);
 }
 
+int error_func(lua_State* L)
+{
+    // [message]
+    xlua::LuaEnv::ms_Instance->GetTraceback(L);
+    // stack: [message, traceback]
+    lua_pushvalue(L, 1);
+    // stack: [message, traceback, message]
+    lua_pushnumber(L, 2);
+    // stack: [message, traceback, message, 2]
+    lua_call(L, 2, 1);
+    return 1;
+}
+
 int pesapi_prepare_function(pesapi_env env)
 {
     lua_State* L = reinterpret_cast<lua_State*>(env);
-    lua_pushcfunction(L, errorfunc);
-    int errfunc = lua_gettop(L);
-
-    return errfunc;
+    lua_pushcfunction(L, error_func);
+    return lua_gettop(L);
 }
 
 int pesapi_call_function(pesapi_env env, pesapi_value errfunc, int argc)
@@ -728,7 +819,7 @@ LUAENV_API int pesapi_dostring(pesapi_env env, const uint8_t* code, size_t code_
 {
     lua_State* L = reinterpret_cast<lua_State*>(env);
     int oldTop = lua_gettop(L);
-    lua_pushcfunction(L, errorfunc);
+    lua_pushcfunction(L, error_func);
     int errfunc = lua_gettop(L);
 
     int ret = luaL_loadbuffer(L, reinterpret_cast<const char*>(code), code_size, path);

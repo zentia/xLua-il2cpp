@@ -19,6 +19,14 @@ typedef struct
     bool NeedDelete;
 } CppObject;
 
+struct IntHashFunctor
+{
+    inline size_t operator()(int x) const
+    {
+        return (size_t)x;
+    }
+};
+
 struct pesapi_callback_info__
 {
     lua_State* L;
@@ -43,6 +51,7 @@ namespace xlua
         int ref;
         bool dictionary;
         bool enumerable;
+
         MetaInfo(int _ref, bool _dictionary, bool _enumerable)
             : ref(_ref)
             , dictionary(_dictionary)
@@ -57,6 +66,8 @@ namespace xlua
         CppObjectMapper();
         void Initialize(lua_State* L);
 
+        void Traceback(lua_State* L);
+
         bool IsInstanceOfCppObject(lua_State* L, const void* TypeId, int ObjectIndex);
 
         std::weak_ptr<int> GetLuaEnvLifeCycleTracker();
@@ -65,7 +76,11 @@ namespace xlua
 
         int CreateFunction(lua_State* L, pesapi_callback Callback, void* Data, pesapi_function_finalize Finalize);
 
-        void UnBindCppObject(lua_State* L, const LuaClassDefinition* classDefinition, void* Ptr);
+        void UnBindCppObject(const LuaClassDefinition* classDefinition, void* ptr);
+
+        void RemoveCacheNode(ObjectCacheNode* node, const LuaClassDefinition* classDefinition);
+
+        void OnUnityObjectDestroy(lua_State* L, void* Ptr, const char* name);
 
         void BindCppObject(lua_State* L, const LuaClassDefinition* classDefinition, void* ptr, bool PassByPointer);
 
@@ -81,6 +96,7 @@ namespace xlua
         {
             return m_Disposed;
         }
+
         static CppObjectMapper* Get();
         static void CallbackDataGarbageCollected(PesapiCallbackData* Data);
 #if OSG_PROFILE
@@ -95,8 +111,9 @@ namespace xlua
 #endif
 
     private:
+        void ReleaseNode(lua_State* L, ObjectCacheNode* PNode, void* ptr, const char* name);
+
         dense_hash_map<void*, ObjectCacheNode*, PointerHashFunctor> m_DataCache;
-        // std::unordered_map<void*, ObjectCacheNode*> m_DataCache;
 
         dense_hash_map<const void*, MetaInfo*, ConstPointerHashFunctor> m_TypeIdToMetaMap;
 
@@ -104,14 +121,16 @@ namespace xlua
 
         std::shared_ptr<int> Ref = std::make_shared<int>(0);
 
-        int m_CacheRef            = 0;
+        int m_Traceback = 0;
+        int m_CacheRef = 0;
         int m_CachePrivateDataRef = 0;
-        int m_IDictionary         = 0;
-        int m_Enumerable          = 0;
+        int m_IDictionary = 0;
+        int m_Enumerable = 0;
 
         MetaInfo* GetMetaRefOfClass(lua_State* L, const LuaClassDefinition* classDefinition);
 
         std::vector<PesapiCallbackData*> m_FunctionDatas;
         bool m_Disposed;
+        bool m_FixPtrError;
     };
 } // namespace xlua

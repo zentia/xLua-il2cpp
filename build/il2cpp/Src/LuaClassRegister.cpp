@@ -10,7 +10,6 @@
 #include <cstring>
 #include <map>
 #include "lua.hpp"
-#include "CppObjectMapper.h"
 
 namespace xlua
 {

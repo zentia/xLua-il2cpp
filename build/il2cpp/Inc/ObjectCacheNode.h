@@ -7,18 +7,22 @@ namespace XLUA_NAMESPACE
     class ObjectCacheNode
     {
     public:
-        explicit ObjectCacheNode(const void* typeId, void* userdata)
+        explicit ObjectCacheNode(const void* typeId, void* userdata, void* ptr)
             : TypeId(typeId), UserData(userdata)
+            , Ptr(ptr)
             , Next(nullptr)
+            , Head(this)
             , Value(-1)
             , MustCallFinalize(false)
         {
         }
 
-        ObjectCacheNode(const void* typeId, ObjectCacheNode* next)
+        ObjectCacheNode(const void* typeId, ObjectCacheNode* next, ObjectCacheNode* head, void* ptr)
             : TypeId(typeId)
             , UserData(nullptr)
+            , Ptr(ptr)
             , Next(next)
+            , Head(head)
             , Value(-1)
             , MustCallFinalize(false)
         {
@@ -27,12 +31,15 @@ namespace XLUA_NAMESPACE
         ObjectCacheNode(ObjectCacheNode&& other) noexcept
             : TypeId(other.TypeId)
             , UserData(other.UserData)
+            , Ptr(other.Ptr)
             , Next(other.Next)
+            , Head(nullptr)
             , Value(std::move(other.Value))
             , MustCallFinalize(other.MustCallFinalize)
         {
             other.TypeId           = nullptr;
             other.UserData         = nullptr;
+            other.Ptr = nullptr;
             other.Next             = nullptr;
             other.MustCallFinalize = false;
         }
@@ -41,12 +48,16 @@ namespace XLUA_NAMESPACE
         {
             TypeId               = rhs.TypeId;
             Next                 = rhs.Next;
+            Head = rhs.Head;
             Value                = std::move(rhs.Value);
             UserData             = rhs.UserData;
+            Ptr = rhs.Ptr;
             MustCallFinalize     = rhs.MustCallFinalize;
             rhs.UserData         = nullptr;
+            rhs.Ptr = nullptr;
             rhs.TypeId           = nullptr;
             rhs.Next             = nullptr;
+            rhs.Head = nullptr;
             rhs.MustCallFinalize = false;
             return *this;
         }
@@ -112,15 +123,16 @@ namespace XLUA_NAMESPACE
 
         ObjectCacheNode* Add(const void* typeId)
         {
-            Next = new ObjectCacheNode(typeId, Next);
+            Next = new ObjectCacheNode(typeId, Next, Head, Ptr);
             return Next;
         }
 
         const void* TypeId;
 
         void* UserData;
-
+        void* Ptr;
         ObjectCacheNode* Next;
+        ObjectCacheNode* Head;
 
         int Value;
 

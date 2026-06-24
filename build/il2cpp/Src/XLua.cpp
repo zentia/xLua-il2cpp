@@ -8,8 +8,19 @@
 #include <CppObjectMapper.h>
 #include "LuaClassRegister.h"
 #include "XLua.h"
+#include "ltracker.h"
 
 #include <assert.h>
+
+#if SGAME_PLATFORM_ANDROID || SGAME_PLATFORM_OPENHARMONY || SGAME_PLATFORM_LINUX
+    #include <sys/syscall.h>
+    #include <unistd.h>
+#elif SGAME_PLATFORM_APPLE
+    #include <pthread.h>
+    #include <mach/mach.h>
+#elif SGAME_PLATFORM_WINDOWS
+    #include <Windows.h>
+#endif
 
 #define GetObjectData(Value, Type) ((Type*)(((uint8_t*)Value) + GUnityExports.SizeOfRuntimeObject))
 
@@ -26,49 +37,48 @@ namespace xlua
 {
     namespace
     {
-        string_buffer s_debug_info;
+        uint64 GetNativeThreadID()
+        {
+#if SGAME_PLATFORM_ANDROID || SGAME_PLATFORM_OPENHARMONY || SGAME_PLATFORM_LINUX
+            return static_cast<uint64>(syscall(SYS_gettid));
+#elif SGAME_PLATFORM_APPLE
+            const pthread_t currentThread = pthread_self();
+            const mach_port_t machThread = pthread_mach_thread_np(currentThread);
+            return static_cast<uint64>(machThread);
+#elif SGAME_PLATFORM_WINDOWS
+            return static_cast<uint64>(::GetCurrentThreadId());
+#else
+            return 0;
+#endif
+        }
+    }
 
+    std::string g_snapshot;
+
+    struct DummyIl2CppObject
+    {
+        void* klass;
+        void* monitor;
+    };
+
+    namespace
+    {
         int panic(lua_State* L)
         {
             const char* msg = lua_tostring(L, -1);
             if (!msg)
                 msg = "unknown error";
-#if WITH_BIANQUE
             osgame_log->error(osgame_log->cat.Lua, msg);
-#endif            
             return 0;
         }
-
-        const char* get_lua_stacktrace(lua_State* L, int level, int top, string_buffer& buffer, const char* msg)
-        {
-            if (L == nullptr)
-                return nullptr;
-            lua_Debug ar;
-            buffer.init();
-            buffer.append(msg);
-            while (level < top && lua_getstack(L, level, &ar))
-            {
-                if (lua_getinfo(L, "Snl", &ar))
-                {
-                    if (buffer.append("\n%s:%d", ar.short_src, ar.currentline) == -1)
-                        return buffer.data;
-                }
-                level++;
-            }
-            return buffer.data;
-        }
     } // namespace
-
-    void snapshot_lua_debug_info(lua_State* L, int level, const char* msg)
-    {
-        get_lua_stacktrace(L, level + 1, level + 2, s_debug_info, msg);
-    }
 
     LuaEnv* LuaEnv::ms_Instance = nullptr;
     int LuaEnv::ms_AuthCode = 0;
 
     LuaEnv::LuaEnv()
     {
+        m_ThreadID = GetNativeThreadID();
         ms_Instance = this;
         ms_AuthCode++;
         L = luaL_newstate();
@@ -81,10 +91,12 @@ namespace xlua
     LuaEnv::~LuaEnv()
     {
         CppObjectMapper.UnInitialize(L);
+        xlua_clear_mirrored_coroutines();
         lua_close(L);
         L = nullptr;
         ms_Instance = nullptr;
     }
+
 } // namespace xlua
 
 extern pesapi_func_ptr reg_apis[];
@@ -126,15 +138,31 @@ PESAPI_MODULE_EXPORT pesapi_ffi* GetFFIApi()
     return &g_pesapi_ffi;
 }
 
-PESAPI_MODULE_EXPORT const char* GetLuaDebugSnapshot()
+PESAPI_MODULE_EXPORT const char* GetLuaDebugSnapshot(uint64 crashThreadId)
 {
-    return xlua::s_debug_info.data;
+    auto&& env = xlua::LuaEnv::ms_Instance;
+    if (env == nullptr)
+    {
+        return "";
+    }
+    auto&& L = env->L;
+    if (L == nullptr)
+        return "";
+    if (!env->IsLuaThread(crashThreadId))
+        return "";
+    return xlua_capture_mirrored_traceback(L);
 }
 
-PESAPI_MODULE_EXPORT void CrashLua()
+PESAPI_MODULE_EXPORT void LuaCrash()
 {
     int* ptr = nullptr;
-    (*(ptr + 1)) = 0; // crash lua
+    (*(ptr + 1)) = 0;
+}
+
+PESAPI_MODULE_EXPORT void OnUnityObjectDestroyByLua(lua_State* L, void* ptr, const char* name)
+{
+    xlua::CppObjectMapper* mapper = xlua::CppObjectMapper::Get();
+    mapper->OnUnityObjectDestroy(L, (ptr ? (xlua::DummyIl2CppObject*)ptr - 1 : nullptr), name);
 }
 #ifdef __cplusplus
 }

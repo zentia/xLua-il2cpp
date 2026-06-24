@@ -2,13 +2,17 @@
 #include <memory>
 #include "DataTransfer.h"
 #include "XLua.h"
+#include "logger/osgame_log.h"
 #include "lua.hpp"
 #include "pesapi.h"
-#if WITH_BIANQUE
-#include "logger/osgame_log.h"
-#endif
+
 #if OSG_PROFILE
     #include "cmlua/cmlua.h"
+#endif
+
+#if LUA_MEM_PROFILER
+    #include "il2cpp/ZEngineApi/ZEngineApi.h"
+    #include "ltracker.h"
 #endif
 
 int pesapi_dostring(pesapi_env env, const uint8_t* code, size_t code_size, const char* path, pesapi_value_ref value_ref);
@@ -19,18 +23,58 @@ EXTERN_C_END
 
 namespace xlua
 {
+    std::string Printf(const char* format, ...)
+    {
+        va_list argsToCheckSize;
+        int n;
+        std::string ret;
+
+        va_start(argsToCheckSize, format);
+#if SGAME_PLATFORM_WINDOWS
+        // MS vsnprintf always returns -1 if string doesn't fit, rather than
+        // the needed size. Used their 'special' function instead to get required size
+        n = _vscprintf_p(format, argsToCheckSize);
+#else
+        // use a temporary buffer as some docs indicate we cannot pass NULL to vsnprintf
+        char buf[1];
+        n = vsnprintf(buf, 0, format, argsToCheckSize);
+#endif
+        if (n == -1)
+            return NULL;
+
+        ret.resize(n + 1, 0);
+        va_end(argsToCheckSize);
+
+        va_list argsToFormat;
+
+        va_start(argsToFormat, format);
+        n = vsnprintf(&ret[0], ret.size(), format, argsToFormat);
+        va_end(argsToFormat);
+
+        assert(n < (int)ret.size());
+
+        if (n == -1)
+            return NULL;
+
+        // The v*printf methods might put a trailing NUL character, which should not not be in a
+        // std::string, so strip it out.
+        if (!ret.empty() && ret[ret.size() - 1] == '\0')
+            ret = ret.substr(0, ret.size() - 1);
+
+        return ret;
+    }
 
     static int dummy_idx_tag = 0;
 
 #if OSG_PROFILE
     int CppObjectMapper::PrefPropertyGetterIndex = 0x100;
     int CppObjectMapper::PrefPropertySetterIndex = 0x101;
-    int CppObjectMapper::PrefFieldGetterIndex    = 0x102;
-    int CppObjectMapper::PrefFieldSetterIndex    = 0x103;
-    int CppObjectMapper::PrefMethodIndex         = 0x104;
-    int CppObjectMapper::PrefFunctionIndex       = 0x105;
-    int CppObjectMapper::PrefNewIndex            = 0x106;
-    int CppObjectMapper::PrefGCIndex             = 0x107;
+    int CppObjectMapper::PrefFieldGetterIndex = 0x102;
+    int CppObjectMapper::PrefFieldSetterIndex = 0x103;
+    int CppObjectMapper::PrefMethodIndex = 0x104;
+    int CppObjectMapper::PrefFunctionIndex = 0x105;
+    int CppObjectMapper::PrefNewIndex = 0x106;
+    int CppObjectMapper::PrefGCIndex = 0x107;
 #endif
 
     CppObjectMapper::CppObjectMapper()
@@ -84,6 +128,14 @@ namespace xlua
 
     void CppObjectMapper::Initialize(lua_State* L)
     {
+        lua_getglobal(L, "debug");
+        // debug
+        lua_getfield(L, -1, "traceback");
+        // debug,traceback
+        lua_remove(L, -2);
+        // traceback
+        m_Traceback = luaL_ref(L, LUA_REGISTRYINDEX);
+
         lua_newtable(L);
         lua_newtable(L);
         lua_pushstring(L, "__mode");
@@ -108,9 +160,9 @@ namespace xlua
         end
         return lua_iter, obj:GetEnumerator(), -1
     end)";
-        size_t size            = strlen(dictionary);
-        int oldTop             = lua_gettop(L);
-        int index              = pesapi_dostring(reinterpret_cast<pesapi_env>(L), reinterpret_cast<const uint8_t*>(dictionary), size, "dictionary", nullptr);
+        size_t size = strlen(dictionary);
+        int oldTop = lua_gettop(L);
+        int index = pesapi_dostring(reinterpret_cast<pesapi_env>(L), reinterpret_cast<const uint8_t*>(dictionary), size, "dictionary", nullptr);
         lua_pushvalue(L, index);
         m_IDictionary = luaL_ref(L, LUA_REGISTRYINDEX);
         lua_settop(L, oldTop);
@@ -123,18 +175,24 @@ namespace xlua
         end
         return lua_iter, obj:GetEnumerator(), -1
     end)";
-        size                   = strlen(enumerable);
-        oldTop                 = lua_gettop(L);
-        index                  = pesapi_dostring(reinterpret_cast<pesapi_env>(L), reinterpret_cast<const uint8_t*>(enumerable), size, "enumerable", nullptr);
+        size = strlen(enumerable);
+        oldTop = lua_gettop(L);
+        index = pesapi_dostring(reinterpret_cast<pesapi_env>(L), reinterpret_cast<const uint8_t*>(enumerable), size, "enumerable", nullptr);
         lua_pushvalue(L, index);
         m_Enumerable = luaL_ref(L, LUA_REGISTRYINDEX);
         lua_settop(L, oldTop);
         m_Disposed = false;
+        m_FixPtrError = bq::ccs::get_settings_value_bool("XLUA_FixPtrError", true);
+    }
+
+    void CppObjectMapper::Traceback(lua_State* L)
+    {
+        lua_rawgeti(L, LUA_REGISTRYINDEX, m_Traceback);
     }
 
     struct GameCoreCSharpMethodInfo
     {
-        std::string Name;
+        const char* Name;
         bool IsStatic;
         bool IsGetter;
         bool IsSetter;
@@ -194,7 +252,7 @@ namespace xlua
         lua_setfield(L, -2, "__gc");
         lua_setmetatable(L, -2);
         CallbackData->Callback = Callback;
-        CallbackData->Data     = Data;
+        CallbackData->Data = Data;
         CallbackData->Finalize = Finalize;
         m_FunctionDatas.push_back(CallbackData);
 
@@ -218,9 +276,7 @@ namespace xlua
     {
         if (typeId == nullptr)
         {
-#if WITH_BIANQUE            
-            osgame_log->error_with_stack_trace(osgame_log->cat.Lua, "typeId is null!");
-#endif            
+            osgame_log->error(osgame_log->cat.Lua, "typeId is null!");
             lua_pushnil(L);
             return lua_gettop(L);
         }
@@ -235,8 +291,8 @@ namespace xlua
             const auto iterator = m_DataCache.find(ptr);
             if (iterator != m_DataCache.end())
             {
-                xlua::ObjectCacheNode* item = iterator->second;
-                if (const xlua::ObjectCacheNode* node = item->Find(typeId))
+                xlua::ObjectCacheNode* head = iterator->second;
+                if (xlua::ObjectCacheNode* node = head->Find(typeId))
                 {
                     // printf("find in cache:%p\n", Ptr);
                     // 这里由于是弱引用，所以值不一定会存在，但是由于GC函数不是立即执行，也就是说这里有可能拿错对象
@@ -245,33 +301,20 @@ namespace xlua
                     {
                         // 校验一下这个对象对不对
                         CppObject* o = static_cast<CppObject*>(lua_touserdata(L, -1));
-                        // 如果两个值类型相同，仍有可能拿错对象
-                        if (o->Ptr == ptr)
+                        if (o->Ptr == ptr && o->TypeId == typeId)
                         {
                             lua_remove(L, -2);
                             return lua_gettop(L);
                         }
-#if WITH_BIANQUE                                                
-                        osgame_log->warning_with_stack_trace(osgame_log->cat.Lua, "FindOrAddCppObject error! o is {}", o->ScriptName);
-#endif                        
                     }
                     lua_pop(L, 2);
-                    // 不存在，删掉无效ref
-                    item->Remove(node->TypeId, item == node);
-                    if (!item->IsValid())
-                    {
-                        m_DataCache.erase(iterator);
-                        // PLog(xlua::Log, "FindOrAddCppObject 0X%p", ptr);
-                    }
                 }
             }
         }
         const LuaClassDefinition* classDefinition = LoadClassByID(typeId);
         if (classDefinition == nullptr)
         {
-#if WITH_BIANQUE            
-            osgame_log->error_with_stack_trace(osgame_log->cat.Lua, "LoadClassByID error");
-#endif            
+            osgame_log->error(osgame_log->cat.Lua, "LoadClassByID error");
             lua_pushnil(L);
             return lua_gettop(L);
         }
@@ -281,24 +324,26 @@ namespace xlua
 
     void CppObjectMapper::BindCppObject(lua_State* L, const LuaClassDefinition* classDefinition, void* ptr, bool passByPointer)
     {
-        CppObject* obj           = static_cast<CppObject*>(lua_newuserdata(L, sizeof(CppObject)));
-        obj->Ptr                 = ptr;
-        obj->TypeId              = classDefinition->TypeId;
+        CppObject* obj = static_cast<CppObject*>(lua_newuserdata(L, sizeof(CppObject)));
+#if LUA_MEM_PROFILER
+        ZEngine::GetApi()->AddUserData(obj, luaT_print_stack(L));
+#endif
+        obj->Ptr = ptr;
+        obj->TypeId = classDefinition->TypeId;
         obj->ScriptName = classDefinition->ScriptName;
-        obj->NeedDelete          = !passByPointer;
+        obj->NeedDelete = !passByPointer;
         const MetaInfo* metaInfo = GetMetaRefOfClass(L, classDefinition);
         lua_rawgeti(L, LUA_REGISTRYINDEX, metaInfo->ref);
         if (lua_isnil(L, -1))
         {
-#if WITH_BIANQUE            
-            osgame_log->error_with_stack_trace(osgame_log->cat.Lua, "BindCppObject error!");
-#endif            
+            osgame_log->error(osgame_log->cat.Lua, "BindCppObject error!");
         }
         lua_setmetatable(L, -2);
 
         lua_rawgeti(L, LUA_REGISTRYINDEX, m_CacheRef);
         lua_pushvalue(L, -2);
         int ref = luaL_ref(L, -2);
+
         lua_pop(L, 1);
         auto iterator = m_DataCache.find(ptr);
         ObjectCacheNode* cacheNodePtr;
@@ -309,37 +354,133 @@ namespace xlua
         else
         {
             void* userdata = nullptr;
-            if (classDefinition->OnEnter)
+            if (!m_FixPtrError)
             {
-                userdata = classDefinition->OnEnter(ptr, classDefinition->Data, GameCoreDataTransfer::GetLuaEnvPrivate());
-                // PLog(xlua::Log, "BindCppObject 0X%p", ptr);
+                if (classDefinition->OnEnter)
+                {
+                    userdata = classDefinition->OnEnter(ptr, classDefinition->Data, GameCoreDataTransfer::GetLuaEnvPrivate());
+#if LUA_MEM_PROFILER
+                    ZEngine::GetApi()->AddCSharpData((uint64_t)userdata, classDefinition->ScriptName, luaT_print_stack(L));
+#endif // LUA_MEM_PROFILER
+                }
             }
-            auto ret     = m_DataCache.insert({ptr, new ObjectCacheNode(classDefinition->TypeId, userdata)});
+            auto ret = m_DataCache.insert({ptr, new ObjectCacheNode(classDefinition->TypeId, userdata, ptr)});
             cacheNodePtr = ret.first->second;
-
         }
         cacheNodePtr->Value = ref;
+        if (m_FixPtrError)
+        {
+            if (classDefinition->OnEnter)
+            {
+                cacheNodePtr->UserData = classDefinition->OnEnter(ptr, classDefinition->Data, GameCoreDataTransfer::GetLuaEnvPrivate());
+#if LUA_MEM_PROFILER
+                ZEngine::GetApi()->AddCSharpData((uint64_t)cacheNodePtr->UserData, classDefinition->ScriptName, luaT_print_stack(L));
+#endif // LUA_MEM_PROFILER
+            }
+        }
     }
 
-    void CppObjectMapper::UnBindCppObject(lua_State* L, const LuaClassDefinition* classDefinition, void* ptr)
+    void CppObjectMapper::UnBindCppObject(const LuaClassDefinition* classDefinition, void* ptr)
     {
         auto iterator = m_DataCache.find(ptr);
         if (iterator != m_DataCache.end())
         {
             ObjectCacheNode* node = iterator->second;
-            node->Remove(classDefinition->TypeId, true);
-            if (!node->TypeId)
-            {
-                void* userdata = node->UserData;
-                m_DataCache.erase(ptr);
-                if (classDefinition->OnExit)
-                {
-                    classDefinition->OnExit(ptr, classDefinition->Data, GameCoreDataTransfer::GetLuaEnvPrivate(), userdata);
-                    // PLog(xlua::Log, "UnBindCppObject 0X%p", ptr);
-                }
-                delete node;
-            }
+            if (ptr == node->Ptr)
+                RemoveCacheNode(node, classDefinition);
+            else
+                osgame_log->fatal(osgame_log->cat.Lua, "UnBindCppObject failed!");
         }
+    }
+
+    void CppObjectMapper::RemoveCacheNode(ObjectCacheNode* node, const LuaClassDefinition* classDefinition)
+    {
+        // Guard against null node pointer
+        if (node == nullptr)
+        {
+            return;
+        }
+
+        // Save node info before any operations that might invalidate the pointer
+        void* nodePtr = node->Ptr;
+
+        // Check if this node has already been removed by checking if it still exists in the cache
+        // This prevents double-removal crashes and validates that the node is still valid
+        auto cacheIt = m_DataCache.find(nodePtr);
+        if (cacheIt == m_DataCache.end())
+        {
+            // Node has already been removed from cache, skip removal
+            // This can happen if RemoveCacheNode was called twice (e.g., from FindOrAddCppObject and BindCppObject)
+            return;
+        }
+
+        // Now that we know the node exists in cache, it's safe to access its members
+        ObjectCacheNode* head = node->Head;
+
+        // Verify that the cached head matches our head pointer
+        // This ensures we're operating on a valid, consistent node
+        if (cacheIt->second != head)
+        {
+            // The cache entry has been modified - this shouldn't happen in normal flow
+            // but can occur if there's a race condition or logic error
+            return;
+        }
+
+        int oldValue = node->Value;
+        void* userdata = node->UserData;
+        bool nodeIsHead = (node == head);
+
+        // Check if the node has already been removed (head node with TypeId == nullptr means it was removed)
+        if (nodeIsHead && head->TypeId == nullptr)
+        {
+            // Node has already been removed, just clean up the cache entry and delete head
+            m_DataCache.erase(nodePtr);
+            delete head;
+            return;
+        }
+
+        // Remove the node from the linked list
+        // Note: After Remove(), the behavior depends on whether node is head and whether head has Next:
+        //   1. If node is head and has Next: Next is moved to head, Next is deleted, head pointer remains valid
+        //   2. If node is head and no Next: head->TypeId is set to nullptr, head pointer remains but is invalid
+        //   3. If node is not head: node is deleted, head pointer remains valid
+        head->Remove(classDefinition->TypeId, true);
+
+        // Call OnExit callback before potentially deleting the node
+        if (classDefinition->OnExit)
+        {
+            classDefinition->OnExit(nodePtr, classDefinition->Data, GameCoreDataTransfer::GetLuaEnvPrivate(), userdata);
+        }
+
+        // After Remove(), determine if we need to delete head and remove from cache:
+        //   - If node was head and head->TypeId is nullptr: head was removed and had no Next, delete head and remove from cache
+        //   - If node was head and head->TypeId is not nullptr: head was replaced by move (Next moved to head), keep head in cache
+        //   - If node was not head: node was deleted, head still exists, keep head in cache
+        if (nodeIsHead && !head->TypeId)
+        {
+            // Head node was removed and had no Next - delete the head node and remove from cache
+            m_DataCache.erase(nodePtr);
+            delete head;
+        }
+        // Otherwise, head still exists (either wasn't removed or was replaced by move), so keep it in cache
+        // If node was not the head, it was already deleted by Remove(), so we don't need to delete it
+    }
+
+    void CppObjectMapper::OnUnityObjectDestroy(lua_State* L, void* ptr, const char* name)
+    {
+        if (L == nullptr || ptr == nullptr)
+            return;
+        auto iterator = m_DataCache.find(ptr);
+        if (iterator == m_DataCache.end())
+        {
+            // osgame_log->warning(osgame_log->cat.Lua, Printf("OnUnityObjectDestroy failed %p", ptr).c_str());
+            return;
+        }
+        lua_rawgeti(L, LUA_REGISTRYINDEX, m_CacheRef);
+        ReleaseNode(L, iterator->second, ptr, name);
+        m_DataCache.erase(ptr);
+        lua_pop(L, 1);
+        // osgame_log->warning(osgame_log->cat.Lua, Printf("OnUnityObjectDestroy success %p", ptr).c_str());
     }
 
     void* CppObjectMapper::GetPrivateData(lua_State* L, int index) const
@@ -365,9 +506,7 @@ namespace xlua
         lua_rawgeti(L, LUA_REGISTRYINDEX, index);
         if (lua_isnil(L, -1))
         {
-#if WITH_BIANQUE            
             osgame_log->error(osgame_log->cat.Lua, "SetPrivateData error, index is {}! invoke by {}", index, func_name);
-#endif            
             lua_pop(L, 2);
             return false;
         }
@@ -386,45 +525,10 @@ namespace xlua
 
     void CppObjectMapper::UnInitialize(lua_State* L)
     {
-        const auto PData = GameCoreDataTransfer::GetLuaEnvPrivate();
         lua_rawgeti(L, LUA_REGISTRYINDEX, m_CacheRef);
         for (auto& KV : m_DataCache)
         {
-            ObjectCacheNode* PNode = KV.second;
-            bool need_delete       = true;
-            bool exit              = false;
-            while (PNode)
-            {
-                if (need_delete)
-                {
-                    lua_rawgeti(L, -1, PNode->Value);
-                    // lua_assert是私有宏，只有在lua中生效，GameCore中不生效
-                    lua_assert(lua_isuserdata(L, -1));
-                    const auto obj = (CppObject*) lua_touserdata(L, -1);
-                    // RAX为0，地址真的是0，也就是说unbind的时候，userdata删掉了，但是注册表索引还在，有可能逻辑有问题，有可能GC的时候，没有及时同步过来，这里先做一下保护
-                    if (obj != nullptr)
-                    {
-                        const LuaClassDefinition* ClassDefinition = FindClassByID(obj->TypeId);
-                        // 值类型需要删除，所以这里必须要执行，但是执行之后，指针会被删除，所以下面的就不要执行了，虚拟机会销毁，所以lua不会内存泄露，LuaEnv也会销毁，所以C#也不会内存泄露
-                        // 因为值类型的内存是手动申请的，所以必须要手动释放
-                        if (ClassDefinition && ClassDefinition->Finalize && need_delete && obj->NeedDelete)
-                        {
-                            ClassDefinition->Finalize(&g_pesapi_ffi, KV.first, ClassDefinition->Data, PData);
-                            need_delete = false;
-                        }
-                        if (ClassDefinition && ClassDefinition->OnExit && !exit && PData)
-                        {
-                            ClassDefinition->OnExit(KV.first, ClassDefinition->Data, PData, KV.second->UserData);
-                            exit = true;
-                        }
-                    }
-                    lua_pop(L, 1);
-                }
-                ObjectCacheNode* temp = PNode;
-                PNode                       = PNode->Next;
-                // 存在重复释放的可能
-                delete temp;
-            }
+            ReleaseNode(L, KV.second, KV.first, "");
         }
         m_FunctionDatas.clear();
         m_DataCache.clear();
@@ -433,11 +537,64 @@ namespace xlua
             delete pairs.second;
         }
         m_TypeIdToMetaMap.clear();
+        luaL_unref(L, LUA_REGISTRYINDEX, m_Traceback);
         luaL_unref(L, LUA_REGISTRYINDEX, m_CacheRef);
         luaL_unref(L, LUA_REGISTRYINDEX, m_CachePrivateDataRef);
         luaL_unref(L, LUA_REGISTRYINDEX, m_IDictionary);
         luaL_unref(L, LUA_REGISTRYINDEX, m_Enumerable);
         m_Disposed = true;
+    }
+
+    void CppObjectMapper::ReleaseNode(lua_State* L, ObjectCacheNode* PNode, void* ptr, const char* name)
+    {
+        const auto PData = GameCoreDataTransfer::GetLuaEnvPrivate();
+        bool need_delete = true;
+        bool exit = false;
+        while (PNode)
+        {
+            if (need_delete)
+            {
+                lua_rawgeti(L, -1, PNode->Value);
+                // lua_assert是私有宏，只有在lua中生效，GameCore中不生效
+                lua_assert(lua_isuserdata(L, -1));
+                const auto obj = (CppObject*)lua_touserdata(L, -1);
+                // RAX为0，地址真的是0，也就是说unbind的时候，userdata删掉了，但是注册表索引还在，有可能逻辑有问题，有可能GC的时候，没有及时同步过来，这里先做一下保护
+                if (obj != nullptr)
+                {
+                    auto&& typeId = PNode->TypeId;
+                    auto objNeedDelete = obj->NeedDelete;
+                    if (obj->TypeId != PNode->TypeId)
+                    {
+                        osgame_log->error(osgame_log->cat.Lua, "Error ptr! name is {}", name);
+                        objNeedDelete = false;
+                    }
+                    const LuaClassDefinition* ClassDefinition = FindClassByID(typeId);
+                    // 值类型需要删除，所以这里必须要执行，但是执行之后，指针会被删除，所以下面的就不要执行了，虚拟机会销毁，所以lua不会内存泄露，LuaEnv也会销毁，所以C#也不会内存泄露
+                    // 因为值类型的内存是手动申请的，所以必须要手动释放
+                    if (ClassDefinition && ClassDefinition->Finalize && need_delete && objNeedDelete)
+                    {
+                        ClassDefinition->Finalize(&g_pesapi_ffi, ptr, ClassDefinition->Data, PData);
+                        need_delete = false;
+                    }
+                    if (ClassDefinition && ClassDefinition->OnExit && !exit && PData)
+                    {
+                        ClassDefinition->OnExit(ptr, ClassDefinition->Data, PData, PNode->UserData);
+                        exit = true;
+                    }
+                    if (obj->Ptr != ptr)
+                        osgame_log->error(osgame_log->cat.Lua, "Error ptr! class name is {}.", ClassDefinition->ScriptName);
+                    else
+                    {
+                        obj->Ptr = nullptr;
+                    }
+                }
+                lua_pop(L, 1);
+            }
+            ObjectCacheNode* temp = PNode;
+            PNode = PNode->Next;
+            // 存在重复释放的可能
+            delete temp;
+        }
     }
 
     // param   --- [1]: obj, [2]: key
@@ -610,6 +767,7 @@ namespace xlua
 #endif
             return 1;
         }
+
         // https://crashsight.qq.com/crash-reporting/crashes/6dd8864548/898163596C46E5F4374117888D9196A6?pid=1&crashDataType=unSystemExit
         // 虚拟机销毁的时候，会进入这里。
         int object_gc(lua_State* L)
@@ -623,11 +781,14 @@ namespace xlua
 #endif
             // newuserdata构造出来的，此时不会销毁
             CppObject* cppObject = (CppObject*)lua_touserdata(L, -1);
-            const auto instance  = xlua::CppObjectMapper::Get();
+#if LUA_MEM_PROFILER
+            ZEngine::GetApi()->RemoveUserData(cppObject);
+#endif
+            const auto instance = xlua::CppObjectMapper::Get();
             // 虚拟机销毁的时候，Ptr指针已经无效了
             if (instance == nullptr || instance->HasDisposed())
                 return 0;
-            instance->UnBindCppObject(L, class_definition, cppObject->Ptr);
+            instance->UnBindCppObject(class_definition, cppObject->Ptr);
             if (cppObject->NeedDelete)
             {
                 // printf("Finalize %p\n", cppObject->Ptr);
@@ -853,16 +1014,16 @@ namespace xlua
         const auto iterator = m_TypeIdToMetaMap.find(classDefinition->TypeId);
         if (iterator == m_TypeIdToMetaMap.end())
         {
-            MetaInfo* metaInfo       = new MetaInfo(0, classDefinition->dictionary, classDefinition->enumerable);
-            int org_top              = lua_gettop(L);
+            MetaInfo* metaInfo = new MetaInfo(0, classDefinition->dictionary, classDefinition->enumerable);
+            int org_top = lua_gettop(L);
             MetaInfo* super_meta_ref = nullptr;
-            bool has_super           = false;
+            bool has_super = false;
             if (classDefinition->SuperTypeId)
             {
                 if (const xlua::LuaClassDefinition* superDefinition = LoadClassByID(classDefinition->SuperTypeId))
                 {
-                    super_meta_ref       = GetMetaRefOfClass(L, superDefinition);
-                    has_super            = true;
+                    super_meta_ref = GetMetaRefOfClass(L, superDefinition);
+                    has_super = true;
                     metaInfo->dictionary = super_meta_ref->dictionary || metaInfo->dictionary;
                     metaInfo->enumerable = super_meta_ref->enumerable || metaInfo->enumerable;
                 }
