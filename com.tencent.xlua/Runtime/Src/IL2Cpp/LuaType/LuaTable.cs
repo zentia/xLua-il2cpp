@@ -42,7 +42,7 @@ namespace XLua
             throw new NotImplementedException();
         }
 
-        public T Get<T>(string key) 
+        public T Get<T>(string key)
         {
             return (T)GetLuaTableValueByString(apis, key, typeof(T));
         }
@@ -102,8 +102,16 @@ namespace XLua
 
         ~LuaTable()
         {
-            if (LuaEnv.Instance != null && LuaEnv.Instance.authCode == authCode)
-                XLua.NativeAPI.AddPendingKillScriptObjects(apis, valueRef);
+            if (LuaEnv.Instance != null)
+            {
+                lock(LuaEnv.Instance)
+                {
+                    if (LuaEnv.Instance != null && LuaEnv.Instance.authCode == authCode)
+                    {
+                        XLua.NativeAPI.AddPendingKillScriptObjects(apis, valueRef);
+                    }
+                }
+            }
         }
     }
 }

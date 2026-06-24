@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using UnityEditor;
 
 namespace XLua
 {
@@ -38,10 +39,18 @@ namespace XLua
         // Call By Gen Code
         public static MethodInfo[] GetExtensionMethods(Type type, params Type[] extensions)
         {
-            return (from e in extensions
-                   from m in e.GetMethods(BindingFlags.Static | BindingFlags.Public)
-                   where !m.IsSpecialName && GetExtendedType(m) == type
-                   select m).ToArray();
+            var list = new List<MethodInfo>();
+            foreach (var e in extensions)
+            {
+                foreach (var m in e.GetMethods(BindingFlags.Static | BindingFlags.Public))
+                {
+                    if (!m.IsSpecialName && GetExtendedType(m) == type)
+                    {
+                        list.Add(m);
+                    }
+                }
+            }
+            return list.ToArray();
         }
 
         [UnityEngine.Scripting.Preserve]
@@ -56,16 +65,19 @@ namespace XLua
 
         public static bool LoadExtensionMethodInfo()
         {
-            var extensionMethodInfosGen = (from assembly in AppDomain.CurrentDomain.GetAssemblies() select assembly.GetType("XLua.ExtensionMethodInfos_Gen")).FirstOrDefault(x => x != null);
-            if (extensionMethodInfosGen == null)
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
-                return false;
+                var extensionMethodInfosGen = assembly.GetType("XLua.ExtensionMethodInfos_Gen");
+                if (extensionMethodInfosGen != null)
+                {
+                    var tryLoadExtensionMethod = extensionMethodInfosGen.GetMethod("TryLoadExtensionMethod");
+                    if (tryLoadExtensionMethod == null)
+                        return false;
+                    LoadExtensionMethod = (Func<string, MethodInfo[]>)Delegate.CreateDelegate(typeof(Func<string, MethodInfo[]>), null, tryLoadExtensionMethod);
+                    return true;
+                }
             }
-            var tryLoadExtensionMethod = extensionMethodInfosGen.GetMethod("TryLoadExtensionMethod");
-            if (tryLoadExtensionMethod == null) 
-                return false;
-            LoadExtensionMethod = (Func<string, MethodInfo[]>)Delegate.CreateDelegate(typeof(Func<string, MethodInfo[]>), null, tryLoadExtensionMethod);
-            return true;
+            return false;
         }
     }
 
@@ -96,17 +108,16 @@ namespace XLua
             public static string NullableStructPrefix = "N_";
             public static string ArrayBuffer = "a";
         }
+        private static Assembly[] assemblies = null;
         private static Type GetType(string className, bool isQualifiedName)
         {
-            Type type = Type.GetType(className, false);
-            if (type != null)
+            if (assemblies == null)
             {
-                return type;
+                assemblies = AppDomain.CurrentDomain.GetAssemblies();
             }
-            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            foreach (Assembly assembly in assemblies)
             {
-                type = assembly.GetType(className);
-
+                var type = assembly.GetType(className);
                 if (type != null)
                 {
                     return type;

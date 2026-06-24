@@ -42,6 +42,6 @@ namespace XLua
             { "op_RightShift", "__shr" },
         };
 
-        public static volatile Dictionary<Type, IEnumerable<MethodInfo>> extensionMethodMap = null;
+        public static volatile Dictionary<Type, List<MethodInfo>> extensionMethodMap = null;
     }
 }

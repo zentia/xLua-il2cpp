@@ -35,9 +35,7 @@ namespace XLua
 
         public LuaEnv(CustomLoader loader)
         {
-#if OSGAME
             osgame_log.info(osgame_log.cat.Lua, "Native XLua Env");
-#endif
             if (!isInitialized)
             {
                 if (!isInitialized)
@@ -55,11 +53,12 @@ namespace XLua
                     NativeAPI.SetGlobalType_IEnumerable(typeof(IEnumerable));
                     NativeAPI.SetGlobalType_IDictionary(typeof(IDictionary));
                     NativeAPI.SetGlobalType_LuaException(typeof(LuaException));
+                    NativeAPI.SetGlobalType_Object(typeof(UnityEngine.Object));
                     XLua.ExtensionMethodInfo.LoadExtensionMethodInfo();
                     isInitialized = true;
                 }
             }
-
+            osgame.common.UnityObjectDestroyEvent.onDestroyByLuaInvoke = OnDestroyByLuaInvoke;
             Init(loader);
 
             nativePesapiEnv = XLua.NativeAPI.GetPapiEnvRef(nativeLuaEnv);
@@ -73,6 +72,12 @@ namespace XLua
             _G = (LuaTable)XLua.NativeAPI.GetGlobalTable(apis, nativePesapiEnv);
 
             DoString("require 'vm/init'");
+        }
+
+        private static void OnDestroyByLuaInvoke(UnityEngine.Object obj)
+        {
+            if (LuaEnv.Instance != null)
+                NativeAPI.OnUnityObjectDestroyByLua(LuaEnv.Instance.rawL, obj, obj.name);
         }
 
         static IntPtr storeCallback = IntPtr.Zero;

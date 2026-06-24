@@ -3,6 +3,9 @@ using LuaAPI = XLua.LuaDLL.Lua;
 using LuaCSFunction = XLua.LuaDLL.lua_CSFunction;
 using System;
 using System.Collections.Generic;
+using System.Reflection;
+using System.Collections;
+using System.Runtime.InteropServices;
 
 namespace XLua
 {
@@ -17,9 +20,11 @@ namespace XLua
 
         const int LIB_VERSION_EXPECT = 105;
 
-        public LuaEnv(CustomLoader loader, Type bridgeType = null, Type objectTranslator = null)
+        public LuaEnv(CustomLoader loader)
         {
-            UnityEngine.Debug.Log("Default XLua Env");
+            var bridgeType = TypeUtils.GetType("XLua.DelegateBridgeWrap");
+            var objectTranslator = TypeUtils.GetType("XLua.ObjectTranslatorWrap");
+            osgame_log.info(osgame_log.cat.Lua, "Default XLua Env");
             Converter.Register();
             if (LuaAPI.xlua_get_lib_version() != LIB_VERSION_EXPECT)
             {
@@ -115,6 +120,15 @@ namespace XLua
             translator.CreateIListEnumerable(rawL);
             translator.CreateArrayMetatable(rawL);
             translator.CreateDelegateMetatable(rawL);
+            var internalGlobalsWarp = TypeUtils.GetType("XLua.InternalGlobalsWrap");
+            if (internalGlobalsWarp != null)
+            {
+                var init = internalGlobalsWarp.GetMethod("Init", BindingFlags.Static | BindingFlags.Public);
+                if (init != null)
+                {
+                    init.Invoke(null, new object[]{});
+                }
+            }
         }
 
         private static List<Action<LuaEnv, ObjectTranslator>> initers = null;
@@ -581,6 +595,13 @@ namespace XLua
                 }
 #endif
             }
+        }
+
+        public string GetStackTrace()
+        {
+            var traceback = LuaAPI.xlua_capture_mirrored_traceback(L);
+            var stackStr = Marshal.PtrToStringAnsi(traceback);
+            return stackStr;
         }
     }
 }

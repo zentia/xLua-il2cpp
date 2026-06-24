@@ -69,7 +69,7 @@ namespace XLua
                 }
                 catch(Exception e)
                 {
-                    Debug.LogWarningFormat("Evaluation failed:{0}\n{1}", entry.expression, e);
+                    osgame_log.error(osgame_log.cat.Lua, "Evaluation failed:{}\n{}", entry.expression, e.Message);
                 }
             }
         }

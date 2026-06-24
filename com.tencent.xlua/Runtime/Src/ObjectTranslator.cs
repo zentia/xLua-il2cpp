@@ -16,6 +16,8 @@ using System.Reflection;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.InteropServices;
+
 #if OSGAME
 using Assets.Plugins.Perf;
 #endif
@@ -1646,5 +1648,5 @@ namespace XLua
         }
     }
 #endif
-}
+            }
 

@@ -222,10 +222,7 @@ namespace XLua
                     //UnityEngine.Debug.Log("value:" + args[inPosArray[i]]);
                 }
 
-                object ret = null;
-
-
-                ret = toInvoke.IsConstructor ? ((ConstructorInfo)method).Invoke(args) : method.Invoke(targetNeeded ? target : null, args);
+                var ret = toInvoke.IsConstructor ? ((ConstructorInfo)method).Invoke(args) : method.Invoke(targetNeeded ? target : null, args);
 
                 if (targetNeeded && targetType.IsValueType())
                 {
@@ -295,11 +292,11 @@ namespace XLua
             }
             catch (TargetInvocationException e)
             {
-                return LuaAPI.luaL_error(L, "c# exception:" + e.InnerException.Message + ",stack:" + e.InnerException.StackTrace);
+                return LuaAPI.luaL_error(L, e.InnerException.Message + "\ncallstack:\n" + e.InnerException.StackTrace);
             }
-            catch (System.Exception e)
+            catch (Exception e)
             {
-                return LuaAPI.luaL_error(L, "c# exception:" + e.Message + ",stack:" + e.StackTrace);
+                return LuaAPI.luaL_error(L, e.Message + "\ncallstack:\n" + e.StackTrace);
             }
         }
     }

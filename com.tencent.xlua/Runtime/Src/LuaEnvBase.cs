@@ -1,10 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-#if OSGAME
-using Assets.Plugins.Common;
-#endif
-using UnityEngine;
 using XLua.LuaDLL;
 
 namespace XLua
@@ -70,6 +66,9 @@ namespace XLua
             ffi = Marshal.PtrToStructure<pesapi_ffi>(apis);
             authCode = ffi.get_auth_code();
             Instance = this as LuaEnv;
+#if LUA_MEM_PROFILER
+            ZRuntimeShared.Init();
+#endif
         }
 
         public virtual void Dispose()
@@ -79,6 +78,9 @@ namespace XLua
             NativeAPI.DestroyNativeLuaEnv(nativeLuaEnv);
             rawL = IntPtr.Zero;
             nativeLuaEnv = IntPtr.Zero;
+#if  LUA_MEM_PROFILER
+            ZRuntimeShared.UnInit();
+#endif
         }
 
         protected void AddSearcher(lua_CSFunction searcher, int index)

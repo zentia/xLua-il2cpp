@@ -25,34 +25,37 @@ namespace XLua
 
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static void SetGlobalType_LuaTable(Type type)
-        {}
+        { }
 
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static void SetGlobalType_ArrayBuffer(Type type)
-        {}
+        { }
 
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static void SetGlobalType_Array(Type type)
-        {}
+        { }
 
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static void SetGlobalType_IntPtr(Type type)
-        {}
+        { }
 
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static void SetGlobalType_IEnumerable(Type type)
-        {}
+        { }
 
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static void SetGlobalType_IDictionary(Type type)
-        {}
+        { }
         [MethodImpl(MethodImplOptions.InternalCall)]
         public static void SetGlobalType_LuaException(Type type)
-        {}
+        { }
+        [MethodImpl(MethodImplOptions.InternalCall)]
+        public static void SetGlobalType_Object(Type type)
+        { }
         [DllImport(DLLNAME, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr GetFFIApi();
         [DllImport(DLLNAME, CallingConvention = CallingConvention.Cdecl)]
-        public static extern void CrashLua();
+        public static extern void LuaCrash();
 #if XLUA_IL2CPP && ENABLE_IL2CPP
 
         [DllImport("__Internal", CallingConvention = CallingConvention.Cdecl)]
@@ -63,6 +66,9 @@ namespace XLua
 
         [DllImport(DLLNAME, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr GetPapiEnvRef(IntPtr luaEnv);
+
+        [DllImport(DLLNAME, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void OnUnityObjectDestroyByLua(IntPtr L, UnityEngine.Object obj, string name);
 
         [DllImport("__Internal", CallingConvention = CallingConvention.Cdecl)]
         public static extern void AddPendingKillScriptObjects(IntPtr ffiApi, IntPtr valueRef);
@@ -253,7 +259,7 @@ namespace XLua
     public delegate void pesapi_warning_func(string msg);
     public delegate void pesapi_error_func(string msg);
     public delegate void pesapi_fatal_func(string msg);
-    public delegate void pesapi_snapshot_func(IntPtr env, string content);
+    public delegate void pesapi_snapshot_func(IntPtr env, string msg);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct pesapi_ffi

@@ -263,54 +263,6 @@ namespace XLua
             return firstParameterConstraint;
         }
 
-#if (!ENABLE_IL2CPP) && !UNITY_EDITOR
-        public static List<Assembly> _assemblies;
-        public static List<Assembly> GetAssemblies()
-        {
-            if (_assemblies == null)
-            {
-                System.Threading.Tasks.Task t = new System.Threading.Tasks.Task(() =>
-                {
-                    _assemblies = GetAssemblyList().Result;
-                });
-                t.Start();
-                t.Wait();
-            }
-            return _assemblies;
-
-        }
-        public static async System.Threading.Tasks.Task<List<Assembly>> GetAssemblyList()
-        {
-            List<Assembly> assemblies = new List<Assembly>();
-            //return assemblies;
-            var files = await Windows.ApplicationModel.Package.Current.InstalledLocation.GetFilesAsync();
-            if (files == null)
-                return assemblies;
-
-            foreach (var file in files.Where(file => file.FileType == ".dll" || file.FileType == ".exe"))
-            {
-                try
-                {
-                    assemblies.Add(Assembly.Load(new AssemblyName(file.DisplayName)));
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine(ex.Message);
-                }
-
-            }
-            return assemblies;
-        }
-        public static IEnumerable<Type> GetAllTypes(bool exclude_generic_definition = true)
-        {
-            var assemblies = GetAssemblies();
-            return from assembly in assemblies
-                   where !(assembly.IsDynamic)
-                   from type in assembly.GetTypes()
-                   where exclude_generic_definition ? !type.GetTypeInfo().IsGenericTypeDefinition : true
-                   select type;
-        }
-#else
         public static List<Type> GetAllTypes(bool exclude_generic_definition = true)
         {
             List<Type> allTypes = new List<Type>();
@@ -336,7 +288,6 @@ namespace XLua
 
             return allTypes;
         }
-#endif
 
 		public static bool LoadField(RealStatePtr L, int idx, string field_name)
 		{
@@ -346,54 +297,6 @@ namespace XLua
 			return !LuaAPI.lua_isnil(L, -1);
 		}
 
-#if (!ENABLE_IL2CPP) && !UNITY_EDITOR
-        public static List<Assembly> _assemblies;
-        public static List<Assembly> GetAssemblies()
-        {
-            if (_assemblies == null)
-            {
-                System.Threading.Tasks.Task t = new System.Threading.Tasks.Task(() =>
-                {
-                    _assemblies = GetAssemblyList().Result;
-                });
-                t.Start();
-                t.Wait();
-            }
-            return _assemblies;
-
-        }
-        public static async System.Threading.Tasks.Task<List<Assembly>> GetAssemblyList()
-        {
-            List<Assembly> assemblies = new List<Assembly>();
-            //return assemblies;
-            var files = await Windows.ApplicationModel.Package.Current.InstalledLocation.GetFilesAsync();
-            if (files == null)
-                return assemblies;
-
-            foreach (var file in files.Where(file => file.FileType == ".dll" || file.FileType == ".exe"))
-            {
-                try
-                {
-                    assemblies.Add(Assembly.Load(new AssemblyName(file.DisplayName)));
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine(ex.Message);
-                }
-
-            }
-            return assemblies;
-        }
-        public static IEnumerable<Type> GetAllTypes(bool exclude_generic_definition = true)
-        {
-            var assemblies = GetAssemblies();
-            return from assembly in assemblies
-                   where !(assembly.IsDynamic)
-                   from type in assembly.GetTypes()
-                   where exclude_generic_definition ? !type.GetTypeInfo().IsGenericTypeDefinition : true
-                   select type;
-        }
-#endif
 #if !XLUA_IL2CPP || !ENABLE_IL2CPP
         static LuaCSFunction genFieldGetter(Type type, FieldInfo field)
         {
@@ -633,13 +536,25 @@ namespace XLua
 				}
 				enumerator.Dispose();
 
-				InternalGlobals.extensionMethodMap = (from type in type_def_extention_method
-													  from method in type.GetMethods(BindingFlags.Static | BindingFlags.Public)
-													  where method.IsDefined(typeof(ExtensionAttribute), false) && IsSupportedMethod(method)
-													  group method by getExtendedType(method)).ToDictionary(g => g.Key, g => g as IEnumerable<MethodInfo>);
+				InternalGlobals.extensionMethodMap = new Dictionary<Type, List<MethodInfo>>();
+                foreach (var type in type_def_extention_method)
+                {
+                    foreach (var method in type.GetMethods(BindingFlags.Static | BindingFlags.Public))
+                    {
+                        if (method.IsDefined(typeof(ExtensionAttribute), false) && IsSupportedMethod(method))
+                        {
+                            var extenedType = getExtendedType(method);
+                            if (!InternalGlobals.extensionMethodMap.TryGetValue(extenedType, out var list))
+                            {
+                                list = new List<MethodInfo>();
+                                InternalGlobals.extensionMethodMap.Add(extenedType, list);
+                            }
+                            list.Add(method);
+                        }
+                    }
+                }
 			}
-			IEnumerable<MethodInfo> ret = null;
-			InternalGlobals.extensionMethodMap.TryGetValue(type_to_be_extend, out ret);
+			InternalGlobals.extensionMethodMap.TryGetValue(type_to_be_extend, out var ret);
 			return ret;
 		}
 
@@ -670,9 +585,19 @@ namespace XLua
 
 				if (field.IsStatic && (field.IsInitOnly || field.IsLiteral))
 				{
+                    object constValue = type.IsEnum ? Convert.ToInt32(field.GetValue(null)) : field.GetValue(null);
                     LuaAPI.xlua_pushasciistring(L, fieldName);
-                    translator.PushAny(L, type.IsEnum ? Convert.ToInt32(field.GetValue(null)) : field.GetValue(null));
-                    LuaAPI.lua_rawset(L, cls_field);
+                    translator.PushFixCSFunction(L, (RealStatePtr L) => {
+                        translator.PushAny(L, constValue);
+                        return 1;
+                    });
+                    LuaAPI.lua_rawset(L, cls_getter);
+
+                    LuaAPI.xlua_pushasciistring(L, fieldName);
+                    translator.PushFixCSFunction(L, (RealStatePtr L) => {
+                        return LuaAPI.luaL_error(L, "Cannot modify a constant.");
+                    });
+                    LuaAPI.lua_rawset(L, cls_setter);
                 }
 				else
 				{
